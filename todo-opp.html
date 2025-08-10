@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro-Todo App</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- PWA Manifest -->
+    <link rel="manifest" id="manifest">
+    <meta name="theme-color" content="#4f46e5">
+
+    <style>
+        /* 기본 스크롤바 스타일링 */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+        .dark ::-webkit-scrollbar-track {
+            background: #2d3748;
+        }
+        .dark ::-webkit-scrollbar-thumb {
+            background: #718096;
+        }
+        .dark ::-webkit-scrollbar-thumb:hover {
+            background: #a0aec0;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        // React 모듈을 전역 객체에서 가져옵니다.
+        const { useState, useEffect, useCallback, useMemo, createContext, useContext, useRef } = React;
+        
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+        import { 
+            getAuth, 
+            onAuthStateChanged, 
+            signInWithPopup, 
+            GoogleAuthProvider, 
+            signOut,
+            signInAnonymously,
+            signInWithCustomToken
+        } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+        import { 
+            getFirestore, 
+            collection, 
+            addDoc, 
+            query, 
+            onSnapshot, 
+            updateDoc, 
+            deleteDoc, 
+            doc,
+            serverTimestamp,
+            Timestamp,
+            where
+        } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+        import { setLogLevel } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+
+        // --- 아이콘 (SVG) ---
+        const SpinnerIcon = ({ className = "h-5 w-5" }) => (
+            <svg className={`animate-spin ${className}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+        );
+
+        const GoogleIcon = () => (
+            <svg className="w-5 h-5 mr-2" aria-hidden="true" focusable="false" data-prefix="fab" data-icon="google" role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 488 512">
+                <path fill="currentColor" d="M488 261.8C488 403.3 391.1 504 248 504 110.8 504 0 393.2 0 256S110.8 8 248 8c66.8 0 126 23.4 172.9 61.9l-69.5 69.5c-24.3-23.6-57.3-38.2-93.4-38.2-73.8 0-134.3 60.5-134.3 134.3s60.5 134.3 134.3 134.3c86.1 0 114.3-54.8 118.8-81.3H248v-85.3h236.1c2.3 12.7 3.9 26.9 3.9 42.4z"></path>
+            </svg>
+        );
+
+        // --- Firebase 설정 ---
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config)
+            : {
+                apiKey: "YOUR_API_KEY",
+                authDomain: "YOUR_AUTH_DOMAIN",
+                projectId: "YOUR_PROJECT_ID",
+                storageBucket: "YOUR_STORAGE_BUCKET",
+                messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+                appId: "YOUR_APP_ID"
+            };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        setLogLevel('debug');
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        // --- 우선순위 맵 ---
+        const priorityMap = {
+            high: { label: '상', color: 'text-red-600 dark:text-red-400', bgColor: 'bg-red-100 dark:bg-red-900/50', borderColor: 'border-red-500' },
+            medium: { label: '중', color: 'text-yellow-600 dark:text-yellow-400', bgColor: 'bg-yellow-100 dark:bg-yellow-800/50', borderColor: 'border-yellow-500' },
+            low: { label: '하', color: 'text-green-600 dark:text-green-400', bgColor: 'bg-green-100 dark:bg-green-800/50', borderColor: 'border-green-500' },
+        };
+
+        // --- 컨텍스트 (Context) ---
+        const AuthContext = createContext();
+        const ThemeContext = createContext();
+
+        // --- 커스텀 훅 (Custom Hooks) ---
+        const useAuth = () => useContext(AuthContext);
+        const useTheme = () => useContext(ThemeContext);
+
+        // --- 프로바이더 컴포넌트 ---
+        const AuthProvider = ({ children }) => {
+            const [user, setUser] = useState(null);
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                const initializeAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (error) {
+                        console.error("초기 인증 실패:", error);
+                        if (auth.currentUser === null) {
+                            try { await signInAnonymously(auth); } catch (anonError) { console.error("익명 로그인 실패:", anonError); }
+                        }
+                    }
+                };
+
+                const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+                    setUser(firebaseUser);
+                    setLoading(false);
+                });
+
+                if (auth.currentUser) {
+                    setUser(auth.currentUser);
+                    setLoading(false);
+                } else {
+                    initializeAuth();
+                }
+
+                return () => unsubscribe();
+            }, []);
+
+            return <AuthContext.Provider value={{ user, loading }}>{children}</AuthContext.Provider>;
+        };
+
+        const ThemeProvider = ({ children }) => {
+            const [theme, setTheme] = useState('light');
+            const toggleTheme = () => setTheme(prev => (prev === 'light' ? 'dark' : 'light'));
+            
+            useEffect(() => {
+                const root = window.document.documentElement;
+                root.classList.remove(theme === 'light' ? 'dark' : 'light');
+                root.classList.add(theme);
+            }, [theme]);
+
+            return <ThemeContext.Provider value={{ theme, toggleTheme }}>{children}</ThemeContext.Provider>;
+        };
+
+        // --- 메인 앱 컴포넌트 ---
+        function App() {
+            return (
+                <AuthProvider>
+                    <ThemeProvider>
+                        <TodoApp />
+                    </ThemeProvider>
+                </AuthProvider>
+            );
+        }
+
+        function TodoApp() {
+            const { user, loading } = useAuth();
+            const { theme } = useTheme();
+
+            if (loading) return <FullScreenLoader />;
+
+            return (
+                <div className={`min-h-screen font-sans transition-colors duration-500 ${theme === 'dark' ? 'bg-gray-900 text-gray-100' : 'bg-gray-100 text-gray-800'}`}>
+                    {user && !user.isAnonymous ? <MainContent /> : <LoginPage />}
+                </div>
+            );
+        }
+
+        // --- UI 컴포넌트 ---
+        const FullScreenLoader = () => (
+            <div className="flex items-center justify-center min-h-screen bg-gray-900">
+                <div className="text-center">
+                    <SpinnerIcon className="mx-auto h-12 w-12 text-white" />
+                    <h2 className="mt-4 text-xl font-semibold text-white">불러오는 중...</h2>
+                    <p className="text-gray-400">잠시만 기다려 주세요.</p>
+                </div>
+            </div>
+        );
+
+        const LoginPage = () => {
+            const [isSigningIn, setIsSigningIn] = useState(false);
+            const { theme } = useTheme();
+
+            const handleGoogleLogin = async () => {
+                setIsSigningIn(true);
+                const provider = new GoogleAuthProvider();
+                try {
+                    await signInWithPopup(auth, provider);
+                } catch (error) {
+                    console.error("Google 로그인 에러:", error);
+                    alert("로그인에 실패했습니다. 파일로 직접 실행하는 경우 Google 로그인이 제한될 수 있습니다.");
+                } finally {
+                    setIsSigningIn(false);
+                }
+            };
+
+            return (
+                <div className="flex items-center justify-center min-h-screen px-4">
+                    <div className={`w-full max-w-md p-8 space-y-8 rounded-xl shadow-2xl ${theme === 'dark' ? 'bg-gray-800' : 'bg-white'}`}>
+                        <div className="text-center">
+                            <h1 className="text-4xl font-bold tracking-tight">Pro-Todo</h1>
+                            <p className={`mt-2 ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>전문가를 위한 투두 리스트. 지금 시작하세요.</p>
+                        </div>
+                        <button
+                            onClick={handleGoogleLogin}
+                            disabled={isSigningIn}
+                            className="w-full flex items-center justify-center px-4 py-3 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:bg-indigo-400 disabled:cursor-not-allowed transition-all duration-300"
+                        >
+                            {isSigningIn ? <SpinnerIcon className="-ml-1 mr-3 h-5 w-5 text-white" /> : <GoogleIcon />}
+                            {isSigningIn ? '로그인 중...' : 'Google 계정으로 시작하기'}
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        // 메인 컨텐츠
+        const MainContent = () => {
+            const { user } = useAuth();
+            const { theme, toggleTheme } = useTheme();
+            const [todos, setTodos] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [view, setView] = useState('list');
+            const [editingTodo, setEditingTodo] = useState(null);
+            const [addingTodoDate, setAddingTodoDate] = useState(null);
+
+            useEffect(() => {
+                if (!user || user.isAnonymous) {
+                    setTodos([]);
+                    setLoading(false);
+                    return;
+                }
+                setLoading(true);
+                const todosCollectionPath = `artifacts/${appId}/users/${user.uid}/todos`;
+                const q = query(
+                    collection(db, todosCollectionPath), 
+                    where("userId", "==", user.uid)
+                );
+
+                const unsubscribe = onSnapshot(q, (snapshot) => {
+                    const todosData = snapshot.docs.map(doc => {
+                        const data = doc.data();
+                        return {
+                            id: doc.id,
+                            ...data,
+                            dueAt: data.dueAt ? data.dueAt.toDate() : null,
+                            createdAt: data.createdAt ? data.createdAt.toDate() : null,
+                        };
+                    });
+                    todosData.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+                    setTodos(todosData);
+                    setLoading(false);
+                }, (error) => {
+                    console.error("데이터 구독 에러:", error);
+                    setLoading(false);
+                });
+                return () => unsubscribe();
+            }, [user]);
+
+            const handleSignOut = async () => {
+                try { await signOut(auth); } catch (error) { console.error("로그아웃 에러:", error); }
+            };
+
+            const crudHandlers = useMemo(() => ({
+                add: async (todoData) => {
+                    if (!user) return;
+                    const { text, priority, dueAt } = todoData;
+                    try {
+                        const todosCollectionPath = `artifacts/${appId}/users/${user.uid}/todos`;
+                        await addDoc(collection(db, todosCollectionPath), {
+                            text,
+                            priority,
+                            completed: false,
+                            dueAt: Timestamp.fromDate(dueAt),
+                            createdAt: serverTimestamp(),
+                            userId: user.uid
+                        });
+                    } catch (error) { console.error("할 일 추가 에러:", error); }
+                },
+                update: async (id, updatedData) => {
+                    if (!user) return;
+                    const todoRef = doc(db, `artifacts/${appId}/users/${user.uid}/todos`, id);
+                    try {
+                        if (updatedData.dueAt) {
+                            updatedData.dueAt = Timestamp.fromDate(updatedData.dueAt);
+                        }
+                        await updateDoc(todoRef, updatedData);
+                    } catch (error) { console.error("할 일 업데이트 에러:", error); }
+                },
+                delete: async (id) => {
+                    if (!user) return;
+                    const todoRef = doc(db, `artifacts/${appId}/users/${user.uid}/todos`, id);
+                    try { await deleteDoc(todoRef); } catch (error) { console.error("할 일 삭제 에러:", error); }
+                }
+            }), [user]);
+
+            return (
+                <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+                    <header className="flex justify-between items-center mb-8">
+                        <div>
+                            <h1 className="text-4xl font-bold tracking-tight">Pro-Todo</h1>
+                            <p className={`${theme === 'dark' ? 'text-gray-400' : 'text-gray-500'} mt-1`}>
+                                {user.displayName ? `${user.displayName}님, 안녕하세요!` : '안녕하세요!'}
+                            </p>
+                        </div>
+                        <div className="flex items-center space-x-4">
+                            <button onClick={toggleTheme} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+                                {theme === 'light' ? '🌙' : '☀️'}
+                            </button>
+                            <button onClick={handleSignOut} className="px-4 py-2 text-sm font-medium bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors">
+                                로그아웃
+                            </button>
+                        </div>
+                    </header>
+
+                    <main>
+                        <ViewSwitcher view={view} setView={setView} />
+                        {loading ? (
+                            <div className="p-8 text-center text-gray-500"><SpinnerIcon className="mx-auto h-8 w-8" /></div>
+                        ) : view === 'list' ? (
+                            <ListView todos={todos} onEdit={setEditingTodo} handlers={crudHandlers} />
+                        ) : (
+                            <CalendarView todos={todos} onEdit={setEditingTodo} onAddRequest={setAddingTodoDate} handlers={crudHandlers} />
+                        )}
+                    </main>
+                    
+                    {editingTodo && <EditTodoModal todo={editingTodo} onClose={() => setEditingTodo(null)} onSave={crudHandlers.update} />}
+                    {addingTodoDate && <AddTodoModal date={addingTodoDate} onClose={() => setAddingTodoDate(null)} onAdd={crudHandlers.add} />}
+                    
+                     <footer className="text-center mt-12 text-sm text-gray-500">
+                        <p>UID: {user.uid}</p>
+                        <p>&copy; {new Date().getFullYear()} Pro-Todo App. All rights reserved.</p>
+                    </footer>
+                </div>
+            );
+        };
+
+        const ViewSwitcher = ({ view, setView }) => (
+            <div className="mb-6 flex justify-center bg-gray-200 dark:bg-gray-700 p-1 rounded-lg">
+                <button onClick={() => setView('list')} className={`px-6 py-2 rounded-md text-sm font-medium transition-colors ${view === 'list' ? 'bg-white dark:bg-gray-900 shadow' : 'text-gray-600 dark:text-gray-300'}`}>목록</button>
+                <button onClick={() => setView('calendar')} className={`px-6 py-2 rounded-md text-sm font-medium transition-colors ${view === 'calendar' ? 'bg-white dark:bg-gray-900 shadow' : 'text-gray-600 dark:text-gray-300'}`}>달력</button>
+            </div>
+        );
+
+        const ListView = ({ todos, onEdit, handlers }) => {
+            const [filter, setFilter] = useState('all');
+            const { theme } = useTheme();
+
+            const sortedTodos = useMemo(() => [...todos].sort((a, b) => (a.dueAt || 0) - (b.dueAt || 0)), [todos]);
+            const filteredTodos = useMemo(() => sortedTodos.filter(todo => filter === 'all' || (filter === 'active' ? !todo.completed : todo.completed)), [sortedTodos, filter]);
+            const remainingTodos = useMemo(() => todos.filter(todo => !todo.completed).length, [todos]);
+
+            return (
+                <div>
+                    <AddTodoForm onAdd={handlers.add} />
+                    <div className={`mt-8 rounded-lg shadow-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-white'}`}>
+                        <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
+                            <h2 className="text-lg font-semibold">{remainingTodos}개의 할 일이 남았습니다.</h2>
+                            <FilterButtons filter={filter} setFilter={setFilter} />
+                        </div>
+                        {filteredTodos.length > 0 ? (
+                            <ul>
+                                {filteredTodos.map((todo, index) => (
+                                    <TodoItem key={todo.id} todo={todo} onToggle={(id, completed) => handlers.update(id, { completed: !completed })} onDelete={handlers.delete} onEdit={onEdit} isLast={index === filteredTodos.length - 1} />
+                                ))}
+                            </ul>
+                        ) : (
+                            <p className="p-8 text-center text-gray-500">표시할 할 일이 없습니다.</p>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const CalendarView = ({ todos, onEdit, onAddRequest, handlers }) => {
+            const [currentDate, setCurrentDate] = useState(new Date());
+            const { theme } = useTheme();
+
+            const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+            const lastDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+            const startDay = firstDayOfMonth.getDay();
+            const daysInMonth = lastDayOfMonth.getDate();
+
+            const calendarDays = useMemo(() => {
+                const days = [];
+                for (let i = 0; i < startDay; i++) days.push({ key: `empty-start-${i}`, isEmpty: true });
+                for (let day = 1; day <= daysInMonth; day++) {
+                    const date = new Date(currentDate.getFullYear(), currentDate.getMonth(), day);
+                    const dayTodos = todos.filter(t => t.dueAt && t.dueAt.toDateString() === date.toDateString()).sort((a,b) => a.dueAt - b.dueAt);
+                    days.push({ key: `day-${day}`, day, date, todos: dayTodos, isToday: date.toDateString() === new Date().toDateString() });
+                }
+                const remainingCells = 42 - days.length;
+                for (let i = 0; i < remainingCells; i++) days.push({ key: `empty-end-${i}`, isEmpty: true });
+                return days;
+            }, [currentDate, todos]);
+            
+            const changeMonth = (offset) => setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() + offset, 1));
+
+            return (
+                <div className={`p-4 rounded-lg shadow-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-white'}`}>
+                    <div className="flex justify-between items-center mb-4">
+                        <button onClick={() => changeMonth(-1)} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700">&lt;</button>
+                        <h2 className="text-xl font-bold">{currentDate.getFullYear()}년 {currentDate.getMonth() + 1}월</h2>
+                        <button onClick={() => changeMonth(1)} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700">&gt;</button>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1 text-center font-semibold text-sm text-gray-500">
+                        {['일', '월', '화', '수', '목', '금', '토'].map(day => <div key={day}>{day}</div>)}
+                    </div>
+                    <div className="grid grid-cols-7 gap-1 mt-2">
+                        {calendarDays.map(day => (
+                            <div key={day.key} className={`relative h-36 p-1.5 border border-gray-200 dark:border-gray-700 rounded-md overflow-y-auto ${day.isEmpty ? 'bg-gray-50 dark:bg-gray-800/50' : ''} ${day.isToday ? 'bg-indigo-100 dark:bg-indigo-900/50' : ''}`}>
+                                {!day.isEmpty && (
+                                    <>
+                                        <span className={`font-bold text-sm ${day.isToday ? 'text-indigo-600' : ''}`}>{day.day}</span>
+                                        <button onClick={() => onAddRequest(day.date)} className="absolute top-1 right-1 text-indigo-500 hover:text-indigo-700 text-lg font-bold">+</button>
+                                        <div className="mt-1 space-y-1">
+                                            {day.todos.map(todo => (
+                                                <div key={todo.id} className={`p-1 text-xs rounded flex items-start gap-1.5 ${todo.completed ? 'bg-gray-200 dark:bg-gray-600 opacity-60' : priorityMap[todo.priority].bgColor}`}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={todo.completed}
+                                                        onChange={(e) => {
+                                                            e.stopPropagation();
+                                                            handlers.update(todo.id, { completed: !todo.completed });
+                                                        }}
+                                                        className="mt-0.5 h-3.5 w-3.5 rounded text-indigo-600 border-gray-300 focus:ring-indigo-500 cursor-pointer"
+                                                    />
+                                                    <div onClick={() => onEdit(todo)} className="flex-1 cursor-pointer">
+                                                        <div className="flex items-center gap-1 font-semibold">
+                                                            <span className={priorityMap[todo.priority].color}>({priorityMap[todo.priority].label})</span>
+                                                            <span>{todo.dueAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                                                        </div>
+                                                        <p className={`break-words ${todo.completed ? 'line-through' : ''}`}>{todo.text}</p>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const AddTodoForm = ({ onAdd }) => {
+            const [text, setText] = useState('');
+            const [priority, setPriority] = useState('medium');
+            const [date, setDate] = useState('');
+            const [time, setTime] = useState('');
+            const { theme } = useTheme();
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!text.trim() || !date || !time) {
+                    alert("할 일, 날짜, 시간을 모두 입력해주세요.");
+                    return;
+                }
+                const dueAt = new Date(`${date}T${time}`);
+                onAdd({ text, priority, dueAt });
+                setText('');
+                setPriority('medium');
+                setDate('');
+                setTime('');
+            };
+
+            return (
+                <form onSubmit={handleSubmit} className={`p-4 rounded-lg shadow-md space-y-4 ${theme === 'dark' ? 'bg-gray-800' : 'bg-white'}`}>
+                    <input 
+                        type="text" 
+                        value={text} 
+                        onChange={(e) => setText(e.target.value)} 
+                        placeholder="새로운 할 일..." 
+                        className={`w-full p-3 rounded-md border ${theme === 'dark' ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-300'}`} 
+                    />
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <input 
+                            type="date" 
+                            value={date} 
+                            onChange={(e) => setDate(e.target.value)} 
+                            className={`w-full p-3 rounded-md border ${theme === 'dark' ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-300'}`} 
+                        />
+                        <input 
+                            type="time" 
+                            value={time} 
+                            onChange={(e) => setTime(e.target.value)} 
+                            className={`w-full p-3 rounded-md border ${theme === 'dark' ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-300'}`} 
+                        />
+                        <select 
+                            value={priority} 
+                            onChange={(e) => setPriority(e.target.value)} 
+                            className={`w-full p-3 rounded-md border ${theme === 'dark' ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-300'}`}
+                        >
+                            <option value="high">중요도: 상</option>
+                            <option value="medium">중요도: 중</option>
+                            <option value="low">중요도: 하</option>
+                        </select>
+                    </div>
+                    <button 
+                        type="submit" 
+                        className="w-full px-6 py-3 bg-indigo-600 text-white font-semibold rounded-md hover:bg-indigo-700 transition-colors"
+                    >
+                        추가
+                    </button>
+                </form>
+            );
+        };
+
+        const FilterButtons = ({ filter, setFilter }) => {
+            const filters = [{ key: 'all', label: '전체' }, { key: 'active', label: '진행중' }, { key: 'completed', label: '완료' }];
+            return (
+                <div className="flex space-x-2">
+                    {filters.map(f => (
+                        <button key={f.key} onClick={() => setFilter(f.key)} className={`px-3 py-1 text-sm font-medium rounded-full transition-colors ${filter === f.key ? 'bg-indigo-600 text-white' : 'hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
+                            {f.label}
+                        </button>
+                    ))}
+                </div>
+            );
+        };
+
+        const TodoItem = React.memo(({ todo, onToggle, onDelete, onEdit, isLast }) => {
+            const formattedDate = todo.dueAt ? `${todo.dueAt.toLocaleDateString()} ${todo.dueAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '마감일 없음';
+
+            return (
+                <li className={`flex items-center p-4 ${!isLast ? 'border-b border-gray-200 dark:border-gray-700' : ''} ${todo.completed ? 'opacity-50' : ''}`}>
+                    <div className={`w-2 h-10 rounded-full mr-4 ${priorityMap[todo.priority].borderColor}`}></div>
+                    <input type="checkbox" checked={todo.completed} onChange={() => onToggle(todo.id, todo.completed)} className="h-6 w-6 rounded-full text-indigo-600 border-gray-300 focus:ring-indigo-500 cursor-pointer" />
+                    <div className="flex-grow mx-4">
+                        <div className="flex items-center gap-2">
+                            <p className={`text-lg ${todo.completed ? 'line-through' : ''}`}>{todo.text}</p>
+                            <span className={`px-2 py-0.5 text-xs font-bold rounded-full ${priorityMap[todo.priority].bgColor} ${priorityMap[todo.priority].color}`}>
+                                {priorityMap[todo.priority].label}
+                            </span>
+                        </div>
+                        <p className="text-sm text-gray-500 mt-1">{formattedDate}</p>
+                    </div>
+                    <button onClick={() => onEdit(todo)} className="p-2 text-gray-400 hover:text-blue-500 transition-colors">✏️</button>
+                    <button onClick={() => onDelete(todo.id)} className="p-2 text-gray-400 hover:text-red-500 transition-colors">🗑️</button>
+                </li>
+            );
+        });
+
+        const Modal = ({ children, onClose }) => {
+            const modalRef = useRef();
+            useEffect(() => {
+                const handleClickOutside = (event) => {
+                    if (modalRef.current && !modalRef.current.contains(event.target)) onClose();
+                };
+                document.addEventListener("mousedown", handleClickOutside);
+                return () => document.removeEventListener("mousedown", handleClickOutside);
+            }, [onClose]);
+
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
+                    <div ref={modalRef} className="w-full max-w-lg">{children}</div>
+                </div>
+            );
+        };
+
+        const AddTodoModal = ({ date, onClose, onAdd }) => {
+            const [text, setText] = useState('');
+            const [priority, setPriority] = useState('medium');
+            const [time, setTime] = useState('09:00');
+            const { theme } = useTheme();
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!text.trim() || !time) {
+                    alert("할 일과 시간을 입력해주세요.");
+                    return;
+                }
+                const [hours, minutes] = time.split(':');
+                const dueAt = new Date(date);
+                dueAt.setHours(hours, minutes);
+                onAdd({ text, priority, dueAt });
+                onClose();
+            };
+
+            return (
+                <Modal onClose={onClose}>
+                    <div className={`p-8 rounded-lg shadow-2xl ${theme === 'dark' ? 'bg-gray-800' : 'bg-white'}`}>
+                        <h2 className="text-2xl font-bold mb-2">할 일 추가</h2>
+                        <p className="text-gray-500 mb-6">{date.toLocaleDateString()}</p>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <input type="text" placeholder="할 일 내용" value={text} onChange={e => setText(e.target.value)} className={`w-full p-3 rounded-md border ${theme === 'dark' ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-300'}`} />
+                            <input type="time" value={time} onChange={e => setTime(e.target.value)} className={`w-full p-3 rounded-md border ${theme === 'dark' ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-300'}`} />
+                            <select value={priority} onChange={e => setPriority(e.target.value)} className={`w-full p-3 rounded-md border ${theme === 'dark' ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-300'}`}>
+                                <option value="high">중요도: 상</option>
+                                <option value="medium">중요도: 중</option>
+                                <option value="low">중요도: 하</option>
+                            </select>
+                            <div className="flex justify-end space-x-4 pt-4">
+                                <button type="button" onClick={onClose} className="px-6 py-2 rounded-md bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors">취소</button>
+                                <button type="submit" className="px-6 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">추가</button>
+                            </div>
+                        </form>
+                    </div>
+                </Modal>
+            );
+        };
+
+        const EditTodoModal = ({ todo, onClose, onSave }) => {
+            const [text, setText] = useState(todo.text);
+            const [priority, setPriority] = useState(todo.priority);
+            const [date, setDate] = useState(todo.dueAt ? todo.dueAt.toISOString().split('T')[0] : '');
+            const [time, setTime] = useState(todo.dueAt ? todo.dueAt.toTimeString().slice(0, 5) : '');
+            const { theme } = useTheme();
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!text.trim() || !date || !time) {
+                    alert("모든 필드를 채워주세요.");
+                    return;
+                }
+                const dueAt = new Date(`${date}T${time}`);
+                onSave(todo.id, { text, priority, dueAt });
+                onClose();
+            };
+
+            return (
+                <Modal onClose={onClose}>
+                    <div className={`p-8 rounded-lg shadow-2xl ${theme === 'dark' ? 'bg-gray-800' : 'bg-white'}`}>
+                        <h2 className="text-2xl font-bold mb-6">할 일 수정</h2>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <input type="text" value={text} onChange={e => setText(e.target.value)} className={`w-full p-3 rounded-md border ${theme === 'dark' ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-300'}`} />
+                            <div className="flex space-x-4">
+                                <input type="date" value={date} onChange={e => setDate(e.target.value)} className={`w-full p-3 rounded-md border ${theme === 'dark' ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-300'}`} />
+                                <input type="time" value={time} onChange={e => setTime(e.target.value)} className={`w-full p-3 rounded-md border ${theme === 'dark' ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-300'}`} />
+                            </div>
+                            <select value={priority} onChange={e => setPriority(e.target.value)} className={`w-full p-3 rounded-md border ${theme === 'dark' ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-300'}`}>
+                                <option value="high">중요도: 상</option>
+                                <option value="medium">중요도: 중</option>
+                                <option value="low">중요도: 하</option>
+                            </select>
+                            <div className="flex justify-end space-x-4 pt-4">
+                                <button type="button" onClick={onClose} className="px-6 py-2 rounded-md bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors">취소</button>
+                                <button type="submit" className="px-6 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">저장</button>
+                            </div>
+                        </form>
+                    </div>
+                </Modal>
+            );
+        };
+        
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+    </script>
+    
+    <script>
+        // PWA Manifest 설정
+        const manifest = {
+            "short_name": "Pro-Todo",
+            "name": "Pro-Todo App",
+            "icons": [
+                {
+                    "src": "https://placehold.co/192x192/818cf8/ffffff?text=Todo",
+                    "type": "image/png",
+                    "sizes": "192x192"
+                },
+                {
+                    "src": "https://placehold.co/512x512/818cf8/ffffff?text=Todo",
+                    "type": "image/png",
+                    "sizes": "512x512"
+                }
+            ],
+            "start_url": ".",
+            "display": "standalone",
+            "theme_color": "#4f46e5",
+            "background_color": "#111827"
+        };
+        const manifestBlob = new Blob([JSON.stringify(manifest)], {type: 'application/json'});
+        const manifestURL = URL.createObjectURL(manifestBlob);
+        document.querySelector('#manifest').setAttribute('href', manifestURL);
+
+        // 서비스 워커 등록
+        if ('serviceWorker' in navigator) {
+            const swContent = `
+                self.addEventListener('install', (event) => {
+                    console.log('Service Worker installing.');
+                });
+
+                self.addEventListener('fetch', (event) => {
+                    event.respondWith(fetch(event.request));
+                });
+            `;
+            const swBlob = new Blob([swContent], {type: 'application/javascript'});
+            const swURL = URL.createObjectURL(swBlob);
+
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register(swURL)
+                    .then(registration => {
+                        console.log('ServiceWorker registration successful with scope: ', registration.scope);
+                    })
+                    .catch(error => {
+                        console.log('ServiceWorker registration failed: ', error);
+                    });
+            });
+        }
+    </script>
+</body>
+</html>

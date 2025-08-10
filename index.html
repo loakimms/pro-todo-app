@@ -129,32 +129,10 @@
             const [loading, setLoading] = useState(true);
 
             useEffect(() => {
-                const initializeAuth = async () => {
-                    try {
-                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                            await signInWithCustomToken(auth, __initial_auth_token);
-                        } else {
-                            await signInAnonymously(auth);
-                        }
-                    } catch (error) {
-                        console.error("초기 인증 실패:", error);
-                        if (auth.currentUser === null) {
-                            try { await signInAnonymously(auth); } catch (anonError) { console.error("익명 로그인 실패:", anonError); }
-                        }
-                    }
-                };
-
-                const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+                 const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
                     setUser(firebaseUser);
                     setLoading(false);
                 });
-
-                if (auth.currentUser) {
-                    setUser(auth.currentUser);
-                    setLoading(false);
-                } else {
-                    initializeAuth();
-                }
 
                 return () => unsubscribe();
             }, []);
@@ -194,7 +172,7 @@
 
             return (
                 <div className={`min-h-screen font-sans transition-colors duration-500 ${theme === 'dark' ? 'bg-gray-900 text-gray-100' : 'bg-gray-100 text-gray-800'}`}>
-                    {user && !user.isAnonymous ? <MainContent /> : <LoginPage />}
+                    {user ? <MainContent /> : <LoginPage />}
                 </div>
             );
         }
@@ -258,7 +236,7 @@
             const [addingTodoDate, setAddingTodoDate] = useState(null);
 
             useEffect(() => {
-                if (!user || user.isAnonymous) {
+                if (!user) {
                     setTodos([]);
                     setLoading(false);
                     return;
